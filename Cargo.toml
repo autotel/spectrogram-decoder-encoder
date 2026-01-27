@@ -1,0 +1,13 @@
+[package]
+name = "spectrogram-decoder-encoder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.29"
+egui = "0.29"
+rfd = "0.15"
+hound = "3.5"
+rustfft = "6.2"
+image = "0.25"
+num-complex = "0.4"
