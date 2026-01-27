@@ -1,7 +1,7 @@
 use eframe::egui;
 use rfd::FileDialog;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use hound;
 
 mod audio_to_image;
 mod image_to_audio;
@@ -53,6 +53,13 @@ impl eframe::App for SpectrogramApp {
             // Display selected file
             if let Some(ref path) = self.selected_file {
                 ui.label(format!("Selected: {}", path.display()));
+                ui.add_space(5.0);
+                
+                // Show what the output will be named
+                if let Ok(output_path) = get_output_path(path) {
+                    ui.label(format!("Will export to: {}", output_path.display()));
+                }
+                
                 ui.add_space(10.0);
                 
                 // Export button
@@ -118,6 +125,32 @@ fn preview_files_being_dropped(ctx: &egui::Context) {
     }
 }
 
+fn get_output_path(path: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let extension = path.extension()
+        .and_then(|s| s.to_str())
+        .ok_or("Unable to determine file extension")?
+        .to_lowercase();
+    
+    match extension.as_str() {
+        "wav" => {
+            // For WAV files, we need to read the sample rate to predict the filename
+            let reader = hound::WavReader::open(path)?;
+            let sample_rate = reader.spec().sample_rate;
+            
+            if let Some(stem) = path.file_stem() {
+                let parent = path.parent().unwrap_or(Path::new(""));
+                Ok(parent.join(format!("{}_SR{}.png", stem.to_string_lossy(), sample_rate)))
+            } else {
+                Ok(path.with_extension("png"))
+            }
+        }
+        "png" | "jpg" | "jpeg" => {
+            Ok(path.with_extension("wav"))
+        }
+        _ => Err("Unsupported file format".into())
+    }
+}
+
 fn process_file(path: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let extension = path.extension()
         .and_then(|s| s.to_str())
@@ -126,10 +159,9 @@ fn process_file(path: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
     
     match extension.as_str() {
         "wav" => {
-            // Audio to image
+            // Audio to image - audio_to_spectrogram now returns the actual path
             let output_path = path.with_extension("png");
-            audio_to_spectrogram(path, &output_path)?;
-            Ok(output_path)
+            audio_to_spectrogram(path, &output_path)
         }
         "png" | "jpg" | "jpeg" => {
             // Image to audio

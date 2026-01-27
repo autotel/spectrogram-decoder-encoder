@@ -3,9 +3,7 @@ use hound;
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::path::Path;
 
-const FFT_SIZE: usize = 2048;
 const HOP_SIZE: usize = 512;
-const SAMPLE_RATE: u32 = 44100;
 
 pub fn spectrogram_to_audio(
     image_path: &Path,
@@ -31,6 +29,9 @@ pub fn spectrogram_to_audio(
     let num_frames = width as usize;
     let num_bins = height as usize;
     
+    // Calculate FFT size from number of bins (bins = FFT_SIZE/2 + 1, so FFT_SIZE = (bins-1)*2)
+    let fft_size = (num_bins - 1) * 2;
+    
     // Convert image to magnitude and phase spectrogram (decode HSV)
     let mut spectrogram_mag = vec![vec![0.0f32; num_frames]; num_bins];
     let mut spectrogram_phase = vec![vec![0.0f32; num_frames]; num_bins];
@@ -42,7 +43,7 @@ pub fn spectrogram_to_audio(
             let pixel = img.get_pixel(frame as u32, y);
             
             // Convert RGB back to HSV
-            let (h, s, v) = rgb_to_hsv(pixel[0], pixel[1], pixel[2]);
+            let (h, _s, v) = rgb_to_hsv(pixel[0], pixel[1], pixel[2]);
             
             // Decode phase from hue [0, 360] to [-π, π]
             let phase = (h / 360.0) * 2.0 * std::f32::consts::PI - std::f32::consts::PI;
@@ -80,17 +81,17 @@ pub fn spectrogram_to_audio(
     
     // Perform inverse STFT with decoded phase
     let mut planner = FftPlanner::new();
-    let ifft = planner.plan_fft_inverse(FFT_SIZE);
+    let ifft = planner.plan_fft_inverse(fft_size);
     
-    let output_len = (num_frames - 1) * HOP_SIZE + FFT_SIZE;
+    let output_len = (num_frames - 1) * HOP_SIZE + fft_size;
     let mut output = vec![0.0f32; output_len];
     let mut window_sum = vec![0.0f32; output_len];
     
     for frame_idx in 0..num_frames {
-        let mut spectrum = vec![Complex::new(0.0, 0.0); FFT_SIZE];
+        let mut spectrum = vec![Complex::new(0.0, 0.0); fft_size];
         
         // Set magnitude and phase spectrum from decoded values
-        for bin in 0..num_bins.min(FFT_SIZE / 2 + 1) {
+        for bin in 0..num_bins.min(fft_size / 2 + 1) {
             let magnitude = spectrogram_mag[bin][frame_idx];
             let phase = spectrogram_phase[bin][frame_idx];
             
@@ -101,18 +102,18 @@ pub fn spectrogram_to_audio(
         }
         
         // Mirror for negative frequencies (ensure real output)
-        for bin in 1..num_bins.min(FFT_SIZE / 2) {
-            spectrum[FFT_SIZE - bin] = spectrum[bin].conj();
+        for bin in 1..num_bins.min(fft_size / 2) {
+            spectrum[fft_size - bin] = spectrum[bin].conj();
         }
         
         ifft.process(&mut spectrum);
         
         // Overlap-add with Hann window
         let start = frame_idx * HOP_SIZE;
-        for (i, &value) in spectrum.iter().take(FFT_SIZE).enumerate() {
+        for (i, &value) in spectrum.iter().take(fft_size).enumerate() {
             if start + i < output_len {
-                let window = 0.5 * (1.0 - ((2.0 * std::f32::consts::PI * i as f32) / (FFT_SIZE as f32 - 1.0)).cos());
-                output[start + i] += value.re * window / FFT_SIZE as f32;
+                let window = 0.5 * (1.0 - ((2.0 * std::f32::consts::PI * i as f32) / (fft_size as f32 - 1.0)).cos());
+                output[start + i] += value.re * window / fft_size as f32;
                 window_sum[start + i] += window;
             }
         }

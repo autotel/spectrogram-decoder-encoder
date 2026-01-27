@@ -1,7 +1,7 @@
 use hound;
 use image::{ImageBuffer, Rgb};
 use rustfft::{FftPlanner, num_complex::Complex};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const FFT_SIZE: usize = 2048;
 const HOP_SIZE: usize = 512;
@@ -9,7 +9,7 @@ const HOP_SIZE: usize = 512;
 pub fn audio_to_spectrogram(
     audio_path: &Path,
     output_path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     // Read WAV file
     let mut reader = hound::WavReader::open(audio_path)?;
     let spec = reader.spec();
@@ -63,6 +63,10 @@ pub fn audio_to_spectrogram(
     // Convert to HSV image (Hue = phase, Saturation = 1, Value = magnitude)
     let width = num_frames as u32;
     let height = num_bins as u32;
+    
+    println!("Creating spectrogram image: {}x{} (width x height)", width, height);
+    println!("FFT_SIZE: {}, num_bins: {}", FFT_SIZE, num_bins);
+    
     let mut img = ImageBuffer::new(width, height);
     
     // Find max magnitude for normalization
@@ -116,7 +120,7 @@ pub fn audio_to_spectrogram(
     };
     
     img.save(&output_with_sr)?;
-    Ok(())
+    Ok(output_with_sr)
 }
 
 // Convert HSV to RGB
