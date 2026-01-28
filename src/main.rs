@@ -26,6 +26,7 @@ fn main() -> Result<(), eframe::Error> {
 struct SpectrogramApp {
     selected_file: Option<PathBuf>,
     status_message: String,
+    use_log_scale: bool,
 }
 
 impl eframe::App for SpectrogramApp {
@@ -36,7 +37,11 @@ impl eframe::App for SpectrogramApp {
             
             ui.label("Drop a file here or click to select:");
             ui.add_space(5.0);
-            
+
+            // Frequency scale checkbox
+            ui.checkbox(&mut self.use_log_scale, "Logarithmic frequency scale (note-based)");
+            ui.add_space(5.0);
+
             // File selection button
             if ui.button("📁 Select File").clicked() {
                 if let Some(path) = FileDialog::new()
@@ -56,7 +61,7 @@ impl eframe::App for SpectrogramApp {
                 ui.add_space(5.0);
                 
                 // Show what the output will be named
-                if let Ok(output_path) = get_output_path(path) {
+                if let Ok(output_path) = get_output_path(path, self.use_log_scale) {
                     ui.label(format!("Will export to: {}", output_path.display()));
                 }
                 
@@ -64,7 +69,7 @@ impl eframe::App for SpectrogramApp {
                 
                 // Export button
                 if ui.button("🚀 Export").clicked() {
-                    self.status_message = match process_file(path) {
+                    self.status_message = match process_file(path, self.use_log_scale) {
                         Ok(output_path) => format!("✓ Successfully exported to: {}", output_path.display()),
                         Err(e) => format!("✗ Error: {}", e),
                     };
@@ -125,21 +130,22 @@ fn preview_files_being_dropped(ctx: &egui::Context) {
     }
 }
 
-fn get_output_path(path: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn get_output_path(path: &PathBuf, use_log_scale: bool) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let extension = path.extension()
         .and_then(|s| s.to_str())
         .ok_or("Unable to determine file extension")?
         .to_lowercase();
-    
+
     match extension.as_str() {
         "wav" => {
             // For WAV files, we need to read the sample rate to predict the filename
             let reader = hound::WavReader::open(path)?;
             let sample_rate = reader.spec().sample_rate;
-            
+            let scale_suffix = if use_log_scale { "_LOG" } else { "_LIN" };
+
             if let Some(stem) = path.file_stem() {
                 let parent = path.parent().unwrap_or(Path::new(""));
-                Ok(parent.join(format!("{}_SR{}.png", stem.to_string_lossy(), sample_rate)))
+                Ok(parent.join(format!("{}_SR{}{}.png", stem.to_string_lossy(), sample_rate, scale_suffix)))
             } else {
                 Ok(path.with_extension("png"))
             }
@@ -151,17 +157,17 @@ fn get_output_path(path: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>
     }
 }
 
-fn process_file(path: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn process_file(path: &PathBuf, use_log_scale: bool) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let extension = path.extension()
         .and_then(|s| s.to_str())
         .ok_or("Unable to determine file extension")?
         .to_lowercase();
-    
+
     match extension.as_str() {
         "wav" => {
             // Audio to image - audio_to_spectrogram now returns the actual path
             let output_path = path.with_extension("png");
-            audio_to_spectrogram(path, &output_path)
+            audio_to_spectrogram(path, &output_path, use_log_scale)
         }
         "png" | "jpg" | "jpeg" => {
             // Image to audio
