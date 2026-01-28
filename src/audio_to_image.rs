@@ -223,10 +223,18 @@ pub fn audio_to_spectrogram(
             
             // Convert phase from [-π, π] to [0, 360] degrees
             let hue = ((phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI) * 360.0) % 360.0;
-            
+
+            // Use saturation to encode "phase hold" for very quiet frequencies
+            // When saturation=0, decoder will continue phase from previous frame
+            let saturation = if value < 0.01 {
+                0.0  // Very quiet - signal to hold/continue phase
+            } else {
+                1.0  // Normal - use this frame's phase
+            };
+
             // Convert HSV to RGB
-            let rgb = hsv_to_rgb(hue, 1.0, value);
-            
+            let rgb = hsv_to_rgb(hue, saturation, value);
+
             // Flip vertically (high frequencies at top)
             let y = height - 1 - bin as u32;
             img.put_pixel(frame as u32, y, Rgb(rgb));

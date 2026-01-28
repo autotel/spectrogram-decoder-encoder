@@ -55,10 +55,19 @@ pub fn spectrogram_to_audio(
             let pixel = img.get_pixel(frame as u32, y);
 
             // Convert RGB back to HSV
-            let (h, _s, v) = rgb_to_hsv(pixel[0], pixel[1], pixel[2]);
+            let (h, s, v) = rgb_to_hsv(pixel[0], pixel[1], pixel[2]);
 
             // Decode phase from hue [0, 360] to [-π, π]
-            let phase = (h / 360.0) * 2.0 * std::f32::consts::PI - std::f32::consts::PI;
+            let decoded_phase = (h / 360.0) * 2.0 * std::f32::consts::PI - std::f32::consts::PI;
+
+            // Check if this is a "phase hold" frame (saturation near 0)
+            let phase = if s < 0.1 && frame > 0 {
+                // Saturation is 0 - continue phase from previous frame
+                spectrogram_phase_image[bin][frame - 1]
+            } else {
+                // Normal - use the decoded phase
+                decoded_phase
+            };
 
             // Calculate frequency for this bin to reverse the boost
             let bin_freq = if use_log_scale {
