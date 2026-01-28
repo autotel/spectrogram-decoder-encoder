@@ -88,6 +88,7 @@ cargo build --release
    - **Linear mode**: Evenly spaced frequencies (default)
    - **Logarithmic mode**: Musical note-based spacing (equal spacing per octave)
    - Log mapping uses exponential interpolation for smooth frequency warping
+   - When using Log Mapping, the resulting audio quality is lower
 
 4. **Pre-emphasis**
    - High frequencies boosted by +6 dB/octave above 1 kHz
