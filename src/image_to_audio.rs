@@ -60,17 +60,30 @@ pub fn spectrogram_to_audio(
             // Decode phase from hue [0, 360] to [-π, π]
             let phase = (h / 360.0) * 2.0 * std::f32::consts::PI - std::f32::consts::PI;
 
-            // Decode magnitude from value (reverse the compression)
-            // This must match the compression used in audio_to_image.rs
+            // Calculate frequency for this bin to reverse the boost
+            let bin_freq = if use_log_scale {
+                let nyquist = sample_rate as f32 / 2.0;
+                let min_freq = 20.0;
+                let t = bin as f32 / (num_bins_image - 1) as f32;
+                min_freq * (nyquist / min_freq).powf(t)
+            } else {
+                let nyquist = sample_rate as f32 / 2.0;
+                (bin as f32 / (num_bins_image - 1) as f32) * nyquist
+            };
 
-            // Reverse Option 1: Power law decompression (gamma = 1/0.3 = 3.333)
-            let magnitude = v.powf(1.0 / 0.3);
+            // Reverse the high-frequency boost
+            let boost_db = if bin_freq > 1000.0 {
+                6.0 * (bin_freq / 1000.0).log2()
+            } else {
+                0.0
+            };
 
-            // Reverse Option 2: Double log decompression (uncomment if using Option 2)
-            // let magnitude = ((1001.0f32.ln() * v.powf(2.0)).exp() - 1.0) / 100.0;
-
-            // Reverse Option 3: Adaptive log decompression (uncomment if using Option 3)
-            // let magnitude = ((1001.0f32.ln() * v).exp() - 1.0) / 1000.0;
+            // Decode magnitude from value (reverse the dB scale and boost)
+            let db_min = -80.0;
+            let db_max = 0.0;
+            let db = v * (db_max - db_min) + db_min;
+            let db_without_boost = db - boost_db; // Remove the boost
+            let magnitude = 10.0f32.powf(db_without_boost / 20.0);
 
             spectrogram_mag_image[bin][frame] = magnitude.max(0.0);
             spectrogram_phase_image[bin][frame] = phase;

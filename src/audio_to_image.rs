@@ -3,8 +3,8 @@ use image::{ImageBuffer, Rgb};
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::path::{Path, PathBuf};
 
-const FFT_SIZE: usize = 2048;
-const HOP_SIZE: usize = 512;
+const FFT_SIZE: usize = 4096;
+const HOP_SIZE: usize = 512;  // Higher overlap (87.5%) for better reconstruction
 
 pub fn audio_to_spectrogram(
     audio_path: &Path,
@@ -127,9 +127,9 @@ pub fn audio_to_spectrogram(
             // Convert frequency to linear bin (fractional)
             let bin_linear_float = freq_log / nyquist * (num_bins_linear - 1) as f32;
 
-            // Debug: print mapping for 440 Hz region
-            if freq_log >= 420.0 && freq_log <= 460.0 {
-                println!("Forward: log_bin={} -> freq={:.1} Hz -> linear_bin={:.2}", log_bin, freq_log, bin_linear_float);
+            // Debug: Show frequency mapping at regular intervals to verify exponential distribution
+            if log_bin % 100 == 0 {
+                println!("Log bin {}: {:.1} Hz (pixel row {} from bottom)", log_bin, freq_log, log_bin);
             }
 
             // Interpolate magnitude and phase from linear bins
@@ -142,6 +142,19 @@ pub fn audio_to_spectrogram(
                 );
                 spectrogram_mag_log[log_bin][frame_idx] = mag;
                 spectrogram_phase_log[log_bin][frame_idx] = phase;
+            }
+        }
+
+        // Verify logarithmic spacing by checking octave intervals
+        println!("\nVerifying logarithmic spacing:");
+        println!("Looking for musical notes (A notes: 110, 220, 440, 880, 1760 Hz):");
+        for target_freq in [110.0, 220.0, 440.0, 880.0, 1760.0, 3520.0] {
+            // Find which bin corresponds to this frequency
+            let t = (target_freq / min_freq).ln() / (max_freq / min_freq).ln();
+            let bin = (t * (num_bins_log - 1) as f32) as usize;
+            if bin < num_bins_log {
+                let actual_freq = min_freq * (max_freq / min_freq).powf(bin as f32 / (num_bins_log - 1) as f32);
+                println!("  {} Hz -> bin {} (actual: {:.1} Hz)", target_freq, bin, actual_freq);
             }
         }
 
@@ -160,30 +173,50 @@ pub fn audio_to_spectrogram(
     
     let mut img = ImageBuffer::new(width, height);
     
-    // Find max magnitude for normalization
+    // Find global max magnitude for normalization
     let max_val = spectrogram_mag.iter()
         .flat_map(|row| row.iter())
         .cloned()
         .fold(0.0f32, f32::max);
-    
+
+    println!("Max magnitude: {}", max_val);
+
+    // Use dB scale with frequency-dependent weighting
+    let db_min = -80.0;
+    let db_max = 0.0;
+
     for (bin, mag_row) in spectrogram_mag.iter().enumerate() {
+        // Apply frequency-dependent boost to preserve high frequencies
+        // Calculate frequency for this bin
+        let bin_freq = if use_log_scale {
+            // For log scale, bin represents a specific frequency
+            let sample_rate = spec.sample_rate as f32;
+            let nyquist = sample_rate / 2.0;
+            let min_freq = 20.0;
+            let t = bin as f32 / (num_bins - 1) as f32;
+            min_freq * (nyquist / min_freq).powf(t)
+        } else {
+            // For linear scale
+            let sample_rate = spec.sample_rate as f32;
+            let nyquist = sample_rate / 2.0;
+            (bin as f32 / (num_bins - 1) as f32) * nyquist
+        };
+
+        // Apply high-frequency boost: +6 dB per octave above 1 kHz
+        let boost_db = if bin_freq > 1000.0 {
+            6.0 * (bin_freq / 1000.0).log2()
+        } else {
+            0.0
+        };
+
         for (frame, &magnitude) in mag_row.iter().enumerate() {
             let phase = spectrogram_phase[bin][frame];
-            
-            // Aggressive dynamic range compression for visibility
-            let value = if max_val > 0.0 {
-                let normalized = magnitude / max_val;
-                
-                // Option 1: Power law compression (gamma = 0.3 makes quiet parts much brighter)
-                let compressed = normalized.powf(0.3);
-                
-                // Option 2: Double log for extreme compression (uncomment to use)
-                // let compressed = ((1.0 + normalized * 100.0).ln() / (101.0f32.ln())).powf(0.5);
-                
-                // Option 3: Adaptive log scale (good balance)
-                // let compressed = (1.0 + normalized * 1000.0).ln() / (1001.0f32.ln());
-                
-                compressed.min(1.0)
+
+            // Convert to dB scale with frequency-dependent boost
+            let value = if max_val > 0.0 && magnitude > 0.0 {
+                let db = 20.0 * (magnitude / max_val).log10() + boost_db;
+                let normalized = (db - db_min) / (db_max - db_min);
+                normalized.clamp(0.0, 1.0)
             } else {
                 0.0
             };
