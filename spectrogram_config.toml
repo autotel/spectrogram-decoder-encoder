@@ -1,7 +1,9 @@
 fft_size = 4096
-hop_size = 128
+hop_size = 32
 min_freq = 20.0
 db_min = -80.0
 db_max = 0.0
 boost_start_freq = 1000.0
 boost_db_per_octave = 6.0
+use_phase_encoding = true
+use_log_scale = true

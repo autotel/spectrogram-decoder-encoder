@@ -27,7 +27,6 @@ fn main() -> Result<(), eframe::Error> {
 struct SpectrogramApp {
     selected_file: Option<PathBuf>,
     status_message: String,
-    use_log_scale: bool,
     config: SpectrogramConfig,
     show_config: bool,
 }
@@ -44,7 +43,6 @@ impl SpectrogramApp {
         Self {
             selected_file: None,
             status_message: String::new(),
-            use_log_scale: false,
             config,
             show_config: false,
         }
@@ -77,10 +75,6 @@ impl eframe::App for SpectrogramApp {
             ui.add_space(10.0);
             
             ui.label("Drop a file here or click to select:");
-            ui.add_space(5.0);
-
-            // Frequency scale checkbox
-            ui.checkbox(&mut self.use_log_scale, "Logarithmic frequency scale (note-based)");
             ui.add_space(5.0);
 
             // Config toggle
@@ -141,6 +135,24 @@ impl eframe::App for SpectrogramApp {
                         ui.label(format!("{} to {} dB", self.config.db_min, self.config.db_max));
                     });
                     
+                    ui.horizontal(|ui| {
+                        ui.label("Phase Encoding:");
+                        ui.label(if self.config.use_phase_encoding { 
+                            "Enabled (color)" 
+                        } else { 
+                            "Disabled (grayscale)" 
+                        });
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Frequency Scale:");
+                        ui.label(if self.config.use_log_scale { 
+                            "Logarithmic (musical)" 
+                        } else { 
+                            "Linear (technical)" 
+                        });
+                    });
+                    
                     ui.label("Edit spectrogram_config.toml to change these values");
                 });
             }
@@ -166,7 +178,7 @@ impl eframe::App for SpectrogramApp {
                 ui.add_space(5.0);
                 
                 // Show what the output will be named and estimated size
-                if let Ok((output_path, est_width)) = get_output_info(path, self.use_log_scale, &self.config) {
+                if let Ok((output_path, est_width)) = get_output_info(path, &self.config) {
                     ui.label(format!("Will export to: {}", output_path.display()));
                     if let Some(width) = est_width {
                         ui.label(format!("Estimated image width: {} pixels", width));
@@ -177,7 +189,7 @@ impl eframe::App for SpectrogramApp {
                 
                 // Export button
                 if ui.button("🚀 Export").clicked() {
-                    self.status_message = match process_file(path, self.use_log_scale, &self.config) {
+                    self.status_message = match process_file(path, &self.config) {
                         Ok(output_path) => format!("✓ Successfully exported to: {}", output_path.display()),
                         Err(e) => format!("✗ Error: {}", e),
                     };
@@ -241,7 +253,6 @@ fn preview_files_being_dropped(ctx: &egui::Context) {
 
 fn get_output_info(
     path: &PathBuf,
-    use_log_scale: bool,
     config: &SpectrogramConfig,
 ) -> Result<(PathBuf, Option<usize>), Box<dyn std::error::Error>> {
     let extension = path.extension()
@@ -255,7 +266,8 @@ fn get_output_info(
             let reader = hound::WavReader::open(path)?;
             let spec = reader.spec();
             let sample_rate = spec.sample_rate;
-            let scale_suffix = if use_log_scale { "_LOG" } else { "_LIN" };
+            let scale_suffix = if config.use_log_scale { "_LOG" } else { "_LIN" };
+            let phase_suffix = if config.use_phase_encoding { "_PHASE" } else { "_MAG" };
             
             // Calculate estimated width
             let total_samples = reader.duration() as usize;
@@ -268,7 +280,7 @@ fn get_output_info(
 
             if let Some(stem) = path.file_stem() {
                 let parent = path.parent().unwrap_or(Path::new(""));
-                let output_path = parent.join(format!("{}_SR{}{}.png", stem.to_string_lossy(), sample_rate, scale_suffix));
+                let output_path = parent.join(format!("{}_SR{}{}{}.png", stem.to_string_lossy(), sample_rate, scale_suffix, phase_suffix));
                 Ok((output_path, Some(est_width)))
             } else {
                 Ok((path.with_extension("png"), Some(est_width)))
@@ -283,7 +295,6 @@ fn get_output_info(
 
 fn process_file(
     path: &PathBuf,
-    use_log_scale: bool,
     config: &SpectrogramConfig,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let extension = path.extension()
@@ -295,7 +306,7 @@ fn process_file(
         "wav" => {
             // Audio to image - audio_to_spectrogram now returns the actual path
             let output_path = path.with_extension("png");
-            audio_to_spectrogram(path, &output_path, use_log_scale, config)
+            audio_to_spectrogram(path, &output_path, config)
         }
         "png" | "jpg" | "jpeg" => {
             // Image to audio

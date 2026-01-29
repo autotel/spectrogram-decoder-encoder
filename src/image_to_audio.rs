@@ -9,10 +9,12 @@ pub fn spectrogram_to_audio(
     output_path: &Path,
     config: &SpectrogramConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Extract sample rate and scale mode from filename (format: filename_SR44100_LOG.png or filename_SR44100_LIN.png)
-    let (sample_rate, use_log_scale) = if let Some(stem) = image_path.file_stem() {
+    // Extract sample rate, scale mode, and phase encoding from filename
+    // Formats: filename_SR44100_LOG_PHASE.png, filename_SR44100_LIN_MAG.png, or legacy filename_SR44100_LOG.png
+    let (sample_rate, use_log_scale, use_phase_encoding) = if let Some(stem) = image_path.file_stem() {
         let stem_str = stem.to_string_lossy();
         println!("Filename stem: {}", stem_str);
+        
         let sample_rate = if let Some(sr_pos) = stem_str.rfind("_SR") {
             let after_sr = &stem_str[sr_pos + 3..];
             // Extract just the number part (before _LOG or _LIN if present)
@@ -27,10 +29,22 @@ pub fn spectrogram_to_audio(
 
         let use_log_scale = stem_str.contains("_LOG");
         println!("use_log_scale: {}", use_log_scale);
+        
+        // Check for phase encoding marker (default to true for backward compatibility)
+        let use_phase_encoding = if stem_str.contains("_PHASE") {
+            println!("Phase encoding: ENABLED (detected _PHASE in filename)");
+            true
+        } else if stem_str.contains("_MAG") {
+            println!("Phase encoding: DISABLED (detected _MAG in filename)");
+            false
+        } else {
+            println!("Phase encoding: ENABLED (legacy format, assuming phase encoding)");
+            true  // Legacy files without marker default to phase encoding
+        };
 
-        (sample_rate, use_log_scale)
+        (sample_rate, use_log_scale, use_phase_encoding)
     } else {
-        (44100, false)
+        (44100, false, true)
     };
     
     // Read image
@@ -57,19 +71,31 @@ pub fn spectrogram_to_audio(
             let y = height - 1 - bin as u32;
             let pixel = img.get_pixel(frame as u32, y);
 
-            // Convert RGB back to HSV
-            let (h, s, v) = rgb_to_hsv(pixel[0], pixel[1], pixel[2]);
+            let phase = if use_phase_encoding {
+                // Phase encoding mode: decode from color (HSV)
+                let (h, s, v) = rgb_to_hsv(pixel[0], pixel[1], pixel[2]);
 
-            // Decode phase from hue [0, 360] to [-π, π]
-            let decoded_phase = (h / 360.0) * 2.0 * std::f32::consts::PI - std::f32::consts::PI;
+                // Decode phase from hue [0, 360] to [-π, π]
+                let decoded_phase = (h / 360.0) * 2.0 * std::f32::consts::PI - std::f32::consts::PI;
 
-            // Check if this is a "phase hold" frame (saturation near 0)
-            let phase = if s < 0.1 && frame > 0 {
-                // Saturation is 0 - continue phase from previous frame
-                spectrogram_phase_image[bin][frame - 1]
+                // Check if this is a "phase hold" frame (saturation near 0)
+                if s < 0.1 && frame > 0 {
+                    // Saturation is 0 - continue phase from previous frame
+                    spectrogram_phase_image[bin][frame - 1]
+                } else {
+                    // Normal - use the decoded phase
+                    decoded_phase
+                }
             } else {
-                // Normal - use the decoded phase
-                decoded_phase
+                // Magnitude-only mode: reconstruct phase using Griffin-Lim-like approach
+                // For first frame, use zero phase
+                // For subsequent frames, estimate phase from previous frame
+                if frame == 0 {
+                    0.0
+                } else {
+                    // Continue phase from previous frame (simple phase propagation)
+                    spectrogram_phase_image[bin][frame - 1]
+                }
             };
 
             // Calculate frequency for this bin to reverse the boost
@@ -87,6 +113,16 @@ pub fn spectrogram_to_audio(
                 config.boost_db_per_octave * (bin_freq / config.boost_start_freq).log2()
             } else {
                 0.0
+            };
+
+            // Decode magnitude from brightness
+            let v = if use_phase_encoding {
+                // Phase encoding mode: get value from HSV
+                let (_, _, value) = rgb_to_hsv(pixel[0], pixel[1], pixel[2]);
+                value
+            } else {
+                // Magnitude-only mode: get value from grayscale brightness
+                pixel[0] as f32 / 255.0
             };
 
             // Decode magnitude from value (reverse the dB scale and boost)

@@ -7,7 +7,6 @@ use crate::config::SpectrogramConfig;
 pub fn audio_to_spectrogram(
     audio_path: &Path,
     output_path: &Path,
-    use_log_scale: bool,
     config: &SpectrogramConfig,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     // Read WAV file
@@ -104,7 +103,7 @@ pub fn audio_to_spectrogram(
     }
 
     // Apply frequency scale transformation if needed
-    let (spectrogram_mag, spectrogram_phase, num_bins) = if use_log_scale {
+    let (spectrogram_mag, spectrogram_phase, num_bins) = if config.use_log_scale {
         // Convert to logarithmic frequency scale
         let sample_rate = spec.sample_rate as f32;
         let nyquist = sample_rate / 2.0;
@@ -186,7 +185,7 @@ pub fn audio_to_spectrogram(
     for (bin, mag_row) in spectrogram_mag.iter().enumerate() {
         // Apply frequency-dependent boost to preserve high frequencies
         // Calculate frequency for this bin
-        let bin_freq = if use_log_scale {
+        let bin_freq = if config.use_log_scale {
             // For log scale, bin represents a specific frequency
             let sample_rate = spec.sample_rate as f32;
             let nyquist = sample_rate / 2.0;
@@ -218,19 +217,26 @@ pub fn audio_to_spectrogram(
                 0.0
             };
             
-            // Convert phase from [-π, π] to [0, 360] degrees
-            let hue = ((phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI) * 360.0) % 360.0;
+            let rgb = if config.use_phase_encoding {
+                // Color mode: encode phase in hue
+                // Convert phase from [-π, π] to [0, 360] degrees
+                let hue = ((phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI) * 360.0) % 360.0;
 
-            // Use saturation to encode "phase hold" for very quiet frequencies
-            // When saturation=0, decoder will continue phase from previous frame
-            let saturation = if value < 0.01 {
-                0.0  // Very quiet - signal to hold/continue phase
+                // Use saturation to encode "phase hold" for very quiet frequencies
+                // When saturation=0, decoder will continue phase from previous frame
+                let saturation = if value < 0.01 {
+                    0.0  // Very quiet - signal to hold/continue phase
+                } else {
+                    1.0  // Normal - use this frame's phase
+                };
+
+                // Convert HSV to RGB
+                hsv_to_rgb(hue, saturation, value)
             } else {
-                1.0  // Normal - use this frame's phase
+                // Grayscale mode: magnitude only (no phase encoding)
+                let gray = (value * 255.0) as u8;
+                [gray, gray, gray]
             };
-
-            // Convert HSV to RGB
-            let rgb = hsv_to_rgb(hue, saturation, value);
 
             // Flip vertically (high frequencies at top)
             let y = height - 1 - bin as u32;
@@ -239,12 +245,13 @@ pub fn audio_to_spectrogram(
     }
     
     // Save image with sample rate and scale mode in filename
-    // Format: filename_SR{sample_rate}_LOG.png or filename_SR{sample_rate}_LIN.png
+    // Format: filename_SR{sample_rate}_LOG_PHASE.png or filename_SR{sample_rate}_LIN_MAG.png
     let sample_rate = spec.sample_rate;
-    let scale_suffix = if use_log_scale { "_LOG" } else { "_LIN" };
+    let scale_suffix = if config.use_log_scale { "_LOG" } else { "_LIN" };
+    let phase_suffix = if config.use_phase_encoding { "_PHASE" } else { "_MAG" };
     let output_with_sr = if let Some(stem) = output_path.file_stem() {
         let parent = output_path.parent().unwrap_or(Path::new(""));
-        parent.join(format!("{}_SR{}{}.png", stem.to_string_lossy(), sample_rate, scale_suffix))
+        parent.join(format!("{}_SR{}{}{}.png", stem.to_string_lossy(), sample_rate, scale_suffix, phase_suffix))
     } else {
         output_path.to_path_buf()
     };

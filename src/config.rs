@@ -33,6 +33,18 @@ pub struct SpectrogramConfig {
     /// High-frequency boost amount (dB per octave)
     #[serde(default = "default_boost_db_per_octave")]
     pub boost_db_per_octave: f32,
+    
+    /// Whether to use color (hue) to encode/decode phase information
+    /// true = color encodes phase (perfect reconstruction)
+    /// false = grayscale magnitude only (phase lost, but easier to edit visually)
+    #[serde(default = "default_use_phase_encoding")]
+    pub use_phase_encoding: bool,
+    
+    /// Whether to use logarithmic frequency scale (musical/note-based)
+    /// true = logarithmic scale (better for music, notes equally spaced)
+    /// false = linear scale (better for technical analysis)
+    #[serde(default = "default_use_log_scale")]
+    pub use_log_scale: bool,
 }
 
 // Default values - now with higher time resolution
@@ -43,6 +55,8 @@ fn default_db_min() -> f32 { -80.0 }
 fn default_db_max() -> f32 { 0.0 }
 fn default_boost_start_freq() -> f32 { 1000.0 }
 fn default_boost_db_per_octave() -> f32 { 6.0 }
+fn default_use_phase_encoding() -> bool { true }
+fn default_use_log_scale() -> bool { true }  // Default to log scale for music
 
 impl Default for SpectrogramConfig {
     fn default() -> Self {
@@ -54,6 +68,8 @@ impl Default for SpectrogramConfig {
             db_max: default_db_max(),
             boost_start_freq: default_boost_start_freq(),
             boost_db_per_octave: default_boost_db_per_octave(),
+            use_phase_encoding: default_use_phase_encoding(),
+            use_log_scale: default_use_log_scale(),
         }
     }
 }
@@ -134,6 +150,8 @@ impl SpectrogramConfig {
         println!("Frequency range (log scale): {:.0} Hz - Nyquist", self.min_freq);
         println!("Dynamic range: {} to {} dB", self.db_min, self.db_max);
         println!("HF Boost: {} dB/octave above {} Hz", self.boost_db_per_octave, self.boost_start_freq);
+        println!("Phase Encoding: {}", if self.use_phase_encoding { "Enabled (color)" } else { "Disabled (grayscale)" });
+        println!("Frequency Scale: {}", if self.use_log_scale { "Logarithmic (musical)" } else { "Linear (technical)" });
         println!("=================================\n");
     }
 }
