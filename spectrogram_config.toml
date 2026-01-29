@@ -1,0 +1,7 @@
+fft_size = 4096
+hop_size = 128
+min_freq = 20.0
+db_min = -80.0
+db_max = 0.0
+boost_start_freq = 1000.0
+boost_db_per_octave = 6.0

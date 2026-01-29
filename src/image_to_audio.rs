@@ -2,12 +2,12 @@ use image;
 use hound;
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::path::Path;
-
-const HOP_SIZE: usize = 512;
+use crate::config::SpectrogramConfig;
 
 pub fn spectrogram_to_audio(
     image_path: &Path,
     output_path: &Path,
+    config: &SpectrogramConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Extract sample rate and scale mode from filename (format: filename_SR44100_LOG.png or filename_SR44100_LIN.png)
     let (sample_rate, use_log_scale) = if let Some(stem) = image_path.file_stem() {
@@ -44,6 +44,9 @@ pub fn spectrogram_to_audio(
     let fft_size = (num_bins_image - 1) * 2;
     let num_bins_linear = fft_size / 2 + 1;
 
+    println!("Image size: {}x{} (width x height)", width, height);
+    println!("FFT size: {}, HOP_SIZE: {}", fft_size, config.hop_size);
+
     // Convert image to magnitude and phase spectrogram (decode HSV)
     let mut spectrogram_mag_image = vec![vec![0.0f32; num_frames]; num_bins_image];
     let mut spectrogram_phase_image = vec![vec![0.0f32; num_frames]; num_bins_image];
@@ -72,25 +75,22 @@ pub fn spectrogram_to_audio(
             // Calculate frequency for this bin to reverse the boost
             let bin_freq = if use_log_scale {
                 let nyquist = sample_rate as f32 / 2.0;
-                let min_freq = 20.0;
                 let t = bin as f32 / (num_bins_image - 1) as f32;
-                min_freq * (nyquist / min_freq).powf(t)
+                config.min_freq * (nyquist / config.min_freq).powf(t)
             } else {
                 let nyquist = sample_rate as f32 / 2.0;
                 (bin as f32 / (num_bins_image - 1) as f32) * nyquist
             };
 
-            // Reverse the high-frequency boost
-            let boost_db = if bin_freq > 1000.0 {
-                6.0 * (bin_freq / 1000.0).log2()
+            // Reverse the high-frequency boost using config values
+            let boost_db = if bin_freq > config.boost_start_freq {
+                config.boost_db_per_octave * (bin_freq / config.boost_start_freq).log2()
             } else {
                 0.0
             };
 
             // Decode magnitude from value (reverse the dB scale and boost)
-            let db_min = -80.0;
-            let db_max = 0.0;
-            let db = v * (db_max - db_min) + db_min;
+            let db = v * (config.db_max - config.db_min) + config.db_min;
             let db_without_boost = db - boost_db; // Remove the boost
             let magnitude = 10.0f32.powf(db_without_boost / 20.0);
 
@@ -103,7 +103,7 @@ pub fn spectrogram_to_audio(
     let (mut spectrogram_mag, spectrogram_phase) = if use_log_scale {
         // Convert from logarithmic frequency scale back to linear
         let nyquist = sample_rate as f32 / 2.0;
-        let min_freq = 20.0;
+        let min_freq = config.min_freq;
         let max_freq = nyquist;
 
         println!("Decoding log scale: nyquist={}, min_freq={}, max_freq={}", nyquist, min_freq, max_freq);
@@ -168,7 +168,7 @@ pub fn spectrogram_to_audio(
     let mut planner = FftPlanner::new();
     let ifft = planner.plan_fft_inverse(fft_size);
     
-    let output_len = (num_frames - 1) * HOP_SIZE + fft_size;
+    let output_len = (num_frames - 1) * config.hop_size + fft_size;
     let mut output = vec![0.0f32; output_len];
     let mut window_sum = vec![0.0f32; output_len];
     
@@ -195,7 +195,7 @@ pub fn spectrogram_to_audio(
         ifft.process(&mut spectrum);
         
         // Overlap-add with Hann window
-        let start = frame_idx * HOP_SIZE;
+        let start = frame_idx * config.hop_size;
         for (i, &value) in spectrum.iter().take(fft_size).enumerate() {
             if start + i < output_len {
                 let window = 0.5 * (1.0 - ((2.0 * std::f32::consts::PI * i as f32) / (fft_size as f32 - 1.0)).cos());
@@ -236,6 +236,7 @@ pub fn spectrogram_to_audio(
     }
     
     writer.finalize()?;
+    println!("Saved audio to: {}", output_path.display());
     Ok(())
 }
 

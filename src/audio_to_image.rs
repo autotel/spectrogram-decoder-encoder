@@ -2,14 +2,13 @@ use hound;
 use image::{ImageBuffer, Rgb};
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::path::{Path, PathBuf};
-
-const FFT_SIZE: usize = 4096;
-const HOP_SIZE: usize = 512;  // Higher overlap (87.5%) for better reconstruction
+use crate::config::SpectrogramConfig;
 
 pub fn audio_to_spectrogram(
     audio_path: &Path,
     output_path: &Path,
     use_log_scale: bool,
+    config: &SpectrogramConfig,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     // Read WAV file
     let mut reader = hound::WavReader::open(audio_path)?;
@@ -64,19 +63,22 @@ pub fn audio_to_spectrogram(
         return Err(format!("Only mono and stereo audio supported, got {} channels", spec.channels).into());
     }
 
-    // Compute STFT
+    // Compute STFT using config values
     let mut planner = FftPlanner::new();
-    let fft = planner.plan_fft_forward(FFT_SIZE);
+    let fft = planner.plan_fft_forward(config.fft_size);
 
-    let num_frames = (samples.len() - FFT_SIZE) / HOP_SIZE + 1;
-    let num_bins_linear = FFT_SIZE / 2 + 1; // Only positive frequencies (no mirror)
+    let num_frames = (samples.len() - config.fft_size) / config.hop_size + 1;
+    let num_bins_linear = config.fft_size / 2 + 1; // Only positive frequencies (no mirror)
+
+    println!("Audio duration: {:.2} seconds", samples.len() as f32 / spec.sample_rate as f32);
+    println!("Will create {} frames (image width = {} pixels)", num_frames, num_frames);
 
     let mut spectrogram_mag_linear = vec![vec![0.0f32; num_frames]; num_bins_linear];
     let mut spectrogram_phase_linear = vec![vec![0.0f32; num_frames]; num_bins_linear];
 
     for frame_idx in 0..num_frames {
-        let start = frame_idx * HOP_SIZE;
-        let end = start + FFT_SIZE;
+        let start = frame_idx * config.hop_size;
+        let end = start + config.fft_size;
         
         if end > samples.len() {
             break;
@@ -87,7 +89,7 @@ pub fn audio_to_spectrogram(
             .iter()
             .enumerate()
             .map(|(i, &s)| {
-                let window = 0.5 * (1.0 - ((2.0 * std::f32::consts::PI * i as f32) / (FFT_SIZE as f32 - 1.0)).cos());
+                let window = 0.5 * (1.0 - ((2.0 * std::f32::consts::PI * i as f32) / (config.fft_size as f32 - 1.0)).cos());
                 Complex::new(s * window, 0.0)
             })
             .collect();
@@ -106,7 +108,7 @@ pub fn audio_to_spectrogram(
         // Convert to logarithmic frequency scale
         let sample_rate = spec.sample_rate as f32;
         let nyquist = sample_rate / 2.0;
-        let min_freq = 20.0; // Lower limit of human hearing
+        let min_freq = config.min_freq;
         let max_freq = nyquist;
 
         println!("Encoding log scale: nyquist={}, min_freq={}, max_freq={}", nyquist, min_freq, max_freq);
@@ -169,7 +171,7 @@ pub fn audio_to_spectrogram(
     let height = num_bins as u32;
     
     println!("Creating spectrogram image: {}x{} (width x height)", width, height);
-    println!("FFT_SIZE: {}, num_bins: {}", FFT_SIZE, num_bins);
+    println!("FFT_SIZE: {}, HOP_SIZE: {}, num_bins: {}", config.fft_size, config.hop_size, num_bins);
     
     let mut img = ImageBuffer::new(width, height);
     
@@ -181,10 +183,6 @@ pub fn audio_to_spectrogram(
 
     println!("Max magnitude: {}", max_val);
 
-    // Use dB scale with frequency-dependent weighting
-    let db_min = -80.0;
-    let db_max = 0.0;
-
     for (bin, mag_row) in spectrogram_mag.iter().enumerate() {
         // Apply frequency-dependent boost to preserve high frequencies
         // Calculate frequency for this bin
@@ -192,9 +190,8 @@ pub fn audio_to_spectrogram(
             // For log scale, bin represents a specific frequency
             let sample_rate = spec.sample_rate as f32;
             let nyquist = sample_rate / 2.0;
-            let min_freq = 20.0;
             let t = bin as f32 / (num_bins - 1) as f32;
-            min_freq * (nyquist / min_freq).powf(t)
+            config.min_freq * (nyquist / config.min_freq).powf(t)
         } else {
             // For linear scale
             let sample_rate = spec.sample_rate as f32;
@@ -202,9 +199,9 @@ pub fn audio_to_spectrogram(
             (bin as f32 / (num_bins - 1) as f32) * nyquist
         };
 
-        // Apply high-frequency boost: +6 dB per octave above 1 kHz
-        let boost_db = if bin_freq > 1000.0 {
-            6.0 * (bin_freq / 1000.0).log2()
+        // Apply high-frequency boost using config values
+        let boost_db = if bin_freq > config.boost_start_freq {
+            config.boost_db_per_octave * (bin_freq / config.boost_start_freq).log2()
         } else {
             0.0
         };
@@ -215,7 +212,7 @@ pub fn audio_to_spectrogram(
             // Convert to dB scale with frequency-dependent boost
             let value = if max_val > 0.0 && magnitude > 0.0 {
                 let db = 20.0 * (magnitude / max_val).log10() + boost_db;
-                let normalized = (db - db_min) / (db_max - db_min);
+                let normalized = (db - config.db_min) / (config.db_max - config.db_min);
                 normalized.clamp(0.0, 1.0)
             } else {
                 0.0
@@ -253,6 +250,7 @@ pub fn audio_to_spectrogram(
     };
 
     img.save(&output_with_sr)?;
+    println!("Saved spectrogram to: {}", output_with_sr.display());
     Ok(output_with_sr)
 }
 
