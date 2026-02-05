@@ -1,6 +1,8 @@
 use eframe::egui;
 use rfd::FileDialog;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use hound;
 
 mod audio_to_image;
@@ -11,9 +13,27 @@ use audio_to_image::audio_to_spectrogram;
 use image_to_audio::spectrogram_to_audio;
 use config::SpectrogramConfig;
 
+#[derive(Clone)]
+enum ProcessingState {
+    Idle,
+    Processing { progress: f32, status: String },
+    Complete { output_path: PathBuf },
+    Error { message: String },
+}
+
+struct SpectrogramApp {
+    selected_file: Option<PathBuf>,
+    status_message: String,
+    config: SpectrogramConfig,
+    show_config: bool,
+    processing_state: Arc<Mutex<ProcessingState>>,
+}
+
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([450.0, 350.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([600.0, 500.0])
+            .with_min_inner_size([500.0, 400.0]),
         ..Default::default()
     };
     
@@ -24,12 +44,6 @@ fn main() -> Result<(), eframe::Error> {
     )
 }
 
-struct SpectrogramApp {
-    selected_file: Option<PathBuf>,
-    status_message: String,
-    config: SpectrogramConfig,
-    show_config: bool,
-}
 
 impl SpectrogramApp {
     fn new() -> Self {
@@ -45,6 +59,7 @@ impl SpectrogramApp {
             status_message: String::new(),
             config,
             show_config: false,
+            processing_state: Arc::new(Mutex::new(ProcessingState::Idle)),
         }
     }
     
@@ -70,9 +85,36 @@ impl Default for SpectrogramApp {
 
 impl eframe::App for SpectrogramApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check processing state
+        let current_state = self.processing_state.lock().unwrap().clone();
+        
+        match current_state {
+            ProcessingState::Complete { output_path } => {
+                self.status_message = format!("✓ Successfully exported to: {}", output_path.display());
+                *self.processing_state.lock().unwrap() = ProcessingState::Idle;
+            }
+            ProcessingState::Error { message } => {
+                self.status_message = format!("✗ Error: {}", message);
+                *self.processing_state.lock().unwrap() = ProcessingState::Idle;
+            }
+            ProcessingState::Processing { .. } => {
+                // Request continuous repaint while processing
+                ctx.request_repaint();
+            }
+            _ => {}
+        }
+        
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Spectrogram Converter");
             ui.add_space(10.0);
+            
+            // Show progress bar if processing
+            if let ProcessingState::Processing { progress, status } = &*self.processing_state.lock().unwrap() {
+                ui.add_space(5.0);
+                ui.label(&*status);
+                ui.add(egui::ProgressBar::new(*progress).show_percentage());
+                ui.add_space(10.0);
+            }
             
             ui.label("Drop a file here or click to select:");
             ui.add_space(5.0);
@@ -98,88 +140,111 @@ impl eframe::App for SpectrogramApp {
             
             if self.show_config {
                 ui.add_space(5.0);
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.label("Current Configuration:");
-                    ui.separator();
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("FFT Size:");
-                        ui.label(format!("{} samples", self.config.fft_size));
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Hop Size:");
-                        ui.label(format!("{} samples", self.config.hop_size));
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Overlap:");
-                        let overlap = (1.0 - self.config.hop_size as f32 / self.config.fft_size as f32) * 100.0;
-                        ui.label(format!("{:.1}%", overlap));
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Time Resolution:");
-                        // Approximate: at 44.1kHz, hop_size 128 = ~2.9ms per frame
-                        let ms_per_frame = (self.config.hop_size as f32 / 44100.0) * 1000.0;
-                        ui.label(format!("~{:.1} ms/pixel @ 44.1kHz", ms_per_frame));
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Min Frequency:");
-                        ui.label(format!("{} Hz", self.config.min_freq));
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Dynamic Range:");
-                        ui.label(format!("{} to {} dB", self.config.db_min, self.config.db_max));
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Phase Encoding:");
-                        ui.label(if self.config.use_phase_encoding { 
-                            "Enabled (color)" 
-                        } else { 
-                            "Disabled (grayscale)" 
+                egui::ScrollArea::vertical()
+                    .max_height(150.0)
+                    .show(ui, |ui| {
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.label("Current Configuration:");
+                            ui.separator();
+                            
+                            ui.horizontal(|ui| {
+                                ui.label("FFT Size:");
+                                ui.label(format!("{} samples", self.config.fft_size));
+                            });
+                            
+                            ui.horizontal(|ui| {
+                                ui.label("Hop Size:");
+                                ui.label(format!("{} samples", self.config.hop_size));
+                            });
+                            
+                            ui.horizontal(|ui| {
+                                ui.label("Overlap:");
+                                let overlap = (1.0 - self.config.hop_size as f32 / self.config.fft_size as f32) * 100.0;
+                                ui.label(format!("{:.1}%", overlap));
+                            });
+                            
+                            ui.horizontal(|ui| {
+                                ui.label("Time Resolution:");
+                                let ms_per_frame = (self.config.hop_size as f32 / 44100.0) * 1000.0;
+                                ui.label(format!("~{:.1} ms/pixel @ 44.1kHz", ms_per_frame));
+                            });
+                            
+                            ui.horizontal(|ui| {
+                                ui.label("Min Frequency:");
+                                ui.label(format!("{} Hz", self.config.min_freq));
+                            });
+                            
+                            ui.horizontal(|ui| {
+                                ui.label("Dynamic Range:");
+                                ui.label(format!("{} to {} dB", self.config.db_min, self.config.db_max));
+                            });
+                            
+                            ui.horizontal(|ui| {
+                                ui.label("Phase Encoding:");
+                                ui.label(if self.config.use_phase_encoding { 
+                                    "Enabled (color)" 
+                                } else { 
+                                    "Disabled (grayscale)" 
+                                });
+                            });
+                            
+                            ui.horizontal(|ui| {
+                                ui.label("Frequency Scale:");
+                                ui.label(if self.config.use_log_scale { 
+                                    "Logarithmic (musical)" 
+                                } else { 
+                                    "Linear (technical)" 
+                                });
+                            });
+                            
+                            if !self.config.use_phase_encoding {
+                                ui.horizontal(|ui| {
+                                    ui.label("Griffin-Lim Iterations:");
+                                    ui.label(format!("{}", self.config.griffin_lim_iterations));
+                                });
+                            }
+                            
+                            ui.label("Edit spectrogram_config.toml to change these values");
                         });
                     });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Frequency Scale:");
-                        ui.label(if self.config.use_log_scale { 
-                            "Logarithmic (musical)" 
-                        } else { 
-                            "Linear (technical)" 
-                        });
-                    });
-                    
-                    ui.label("Edit spectrogram_config.toml to change these values");
-                });
             }
             
             ui.add_space(10.0);
 
             // File selection button
-            if ui.button("📁 Select File").clicked() {
-                if let Some(path) = FileDialog::new()
-                    .add_filter("Audio/Image", &["wav", "png", "jpg", "jpeg"])
-                    .pick_file()
-                {
-                    self.selected_file = Some(path);
-                    self.status_message = String::new();
+            let is_processing = matches!(*self.processing_state.lock().unwrap(), ProcessingState::Processing { .. });
+            
+            ui.add_enabled_ui(!is_processing, |ui| {
+                if ui.button("📁 Select File").clicked() {
+                    // Use non-blocking file dialog
+                    if let Some(path) = FileDialog::new()
+                        .add_filter("Audio/Image", &["wav", "png", "jpg", "jpeg"])
+                        .pick_file()
+                    {
+                        self.selected_file = Some(path);
+                        self.status_message = String::new();
+                    }
                 }
-            }
+            });
             
             ui.add_space(10.0);
             
-            // Display selected file
+            // Display selected file with scrollable path
             if let Some(ref path) = self.selected_file {
-                ui.label(format!("Selected: {}", path.display()));
+                egui::ScrollArea::horizontal()
+                    .id_source("file_path_scroll")
+                    .show(ui, |ui| {
+                        ui.label(format!("Selected: {}", path.display()));
+                    });
                 ui.add_space(5.0);
                 
                 // Show what the output will be named and estimated size
                 if let Ok((output_path, est_width)) = get_output_info(path, &self.config) {
-                    ui.label(format!("Will export to: {}", output_path.display()));
+                    egui::ScrollArea::horizontal()
+                        .id_source("output_path_scroll")
+                        .show(ui, |ui| {
+                            ui.label(format!("Will export to: {}", output_path.display()));
+                        });
                     if let Some(width) = est_width {
                         ui.label(format!("Estimated image width: {} pixels", width));
                     }
@@ -188,12 +253,32 @@ impl eframe::App for SpectrogramApp {
                 ui.add_space(10.0);
                 
                 // Export button
-                if ui.button("🚀 Export").clicked() {
-                    self.status_message = match process_file(path, &self.config) {
-                        Ok(output_path) => format!("✓ Successfully exported to: {}", output_path.display()),
-                        Err(e) => format!("✗ Error: {}", e),
-                    };
-                }
+                ui.add_enabled_ui(!is_processing, |ui| {
+                    if ui.button("🚀 Export").clicked() {
+                        let path = path.clone();
+                        let config = self.config.clone();
+                        let state = self.processing_state.clone();
+                        
+                        // Start processing in background thread
+                        thread::spawn(move || {
+                            *state.lock().unwrap() = ProcessingState::Processing {
+                                progress: 0.0,
+                                status: "Starting...".to_string(),
+                            };
+                            
+                            match process_file(&path, &config, state.clone()) {
+                                Ok(output_path) => {
+                                    *state.lock().unwrap() = ProcessingState::Complete { output_path };
+                                }
+                                Err(e) => {
+                                    *state.lock().unwrap() = ProcessingState::Error {
+                                        message: e.to_string(),
+                                    };
+                                }
+                            }
+                        });
+                    }
+                });
             } else {
                 ui.label("No file selected");
             }
@@ -203,23 +288,29 @@ impl eframe::App for SpectrogramApp {
             // Status message
             if !self.status_message.is_empty() {
                 ui.separator();
-                ui.label(&self.status_message);
+                egui::ScrollArea::horizontal()
+                    .id_source("status_scroll")
+                    .show(ui, |ui| {
+                        ui.label(&self.status_message);
+                    });
             }
             
             // File drop zone
             preview_files_being_dropped(ctx);
             
             // Handle dropped files
-            ctx.input(|i| {
-                if !i.raw.dropped_files.is_empty() {
-                    if let Some(dropped_file) = i.raw.dropped_files.first() {
-                        if let Some(path) = &dropped_file.path {
-                            self.selected_file = Some(path.clone());
-                            self.status_message = String::new();
+            if !is_processing {
+                ctx.input(|i| {
+                    if !i.raw.dropped_files.is_empty() {
+                        if let Some(dropped_file) = i.raw.dropped_files.first() {
+                            if let Some(path) = &dropped_file.path {
+                                self.selected_file = Some(path.clone());
+                                self.status_message = String::new();
+                            }
                         }
                     }
-                }
-            });
+                });
+            }
         });
     }
 }
@@ -296,6 +387,7 @@ fn get_output_info(
 fn process_file(
     path: &PathBuf,
     config: &SpectrogramConfig,
+    progress_state: Arc<Mutex<ProcessingState>>,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let extension = path.extension()
         .and_then(|s| s.to_str())
@@ -304,14 +396,62 @@ fn process_file(
 
     match extension.as_str() {
         "wav" => {
-            // Audio to image - audio_to_spectrogram now returns the actual path
+            *progress_state.lock().unwrap() = ProcessingState::Processing {
+                progress: 0.2,
+                status: "Reading audio file...".to_string(),
+            };
+            
             let output_path = path.with_extension("png");
-            audio_to_spectrogram(path, &output_path, config)
+            
+            *progress_state.lock().unwrap() = ProcessingState::Processing {
+                progress: 0.5,
+                status: "Computing spectrogram...".to_string(),
+            };
+            
+            let result = audio_to_spectrogram(path, &output_path, config)?;
+            
+            *progress_state.lock().unwrap() = ProcessingState::Processing {
+                progress: 1.0,
+                status: "Complete!".to_string(),
+            };
+            
+            Ok(result)
         }
         "png" | "jpg" | "jpeg" => {
-            // Image to audio
+            *progress_state.lock().unwrap() = ProcessingState::Processing {
+                progress: 0.2,
+                status: "Reading image file...".to_string(),
+            };
+            
             let output_path = path.with_extension("wav");
+            
+            *progress_state.lock().unwrap() = ProcessingState::Processing {
+                progress: 0.3,
+                status: "Decoding spectrogram...".to_string(),
+            };
+            
+            // Check if Griffin-Lim will be used
+            let use_griffin_lim = if let Some(stem) = path.file_stem() {
+                let stem_str = stem.to_string_lossy();
+                stem_str.contains("_MAG")
+            } else {
+                false
+            };
+            
+            if use_griffin_lim {
+                *progress_state.lock().unwrap() = ProcessingState::Processing {
+                    progress: 0.4,
+                    status: "Running Griffin-Lim algorithm (this may take a while)...".to_string(),
+                };
+            }
+            
             spectrogram_to_audio(path, &output_path, config)?;
+            
+            *progress_state.lock().unwrap() = ProcessingState::Processing {
+                progress: 1.0,
+                status: "Complete!".to_string(),
+            };
+            
             Ok(output_path)
         }
         _ => Err("Unsupported file format. Use WAV for audio or PNG/JPG for images.".into())
