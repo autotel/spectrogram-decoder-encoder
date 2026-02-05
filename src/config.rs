@@ -45,6 +45,12 @@ pub struct SpectrogramConfig {
     /// false = linear scale (better for technical analysis)
     #[serde(default = "default_use_log_scale")]
     pub use_log_scale: bool,
+    
+    /// Number of Griffin-Lim iterations for magnitude-only reconstruction
+    /// Only used when use_phase_encoding = false
+    /// More iterations = better quality but slower (typical: 10-50)
+    #[serde(default = "default_griffin_lim_iterations")]
+    pub griffin_lim_iterations: usize,
 }
 
 // Default values - now with higher time resolution
@@ -57,6 +63,7 @@ fn default_boost_start_freq() -> f32 { 1000.0 }
 fn default_boost_db_per_octave() -> f32 { 6.0 }
 fn default_use_phase_encoding() -> bool { true }
 fn default_use_log_scale() -> bool { true }  // Default to log scale for music
+fn default_griffin_lim_iterations() -> usize { 30 }  // 30 iterations is a good balance
 
 impl Default for SpectrogramConfig {
     fn default() -> Self {
@@ -70,6 +77,7 @@ impl Default for SpectrogramConfig {
             boost_db_per_octave: default_boost_db_per_octave(),
             use_phase_encoding: default_use_phase_encoding(),
             use_log_scale: default_use_log_scale(),
+            griffin_lim_iterations: default_griffin_lim_iterations(),
         }
     }
 }

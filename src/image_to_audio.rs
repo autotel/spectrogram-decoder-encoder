@@ -4,6 +4,105 @@ use rustfft::{FftPlanner, num_complex::Complex};
 use std::path::Path;
 use crate::config::SpectrogramConfig;
 
+/// Griffin-Lim algorithm for phase reconstruction from magnitude spectrogram
+/// Iteratively estimates phases that produce a consistent signal
+fn griffin_lim(
+    magnitude_spectrogram: &[Vec<f32>],
+    fft_size: usize,
+    hop_size: usize,
+    num_iterations: usize,
+) -> Vec<Vec<f32>> {
+    let num_bins = magnitude_spectrogram.len();
+    let num_frames = magnitude_spectrogram[0].len();
+    
+    println!("Running Griffin-Lim algorithm with {} iterations...", num_iterations);
+    
+    // Initialize with zero phases
+    let mut phase_spectrogram: Vec<Vec<f32>> = vec![vec![0.0f32; num_frames]; num_bins];
+    
+    let mut planner = FftPlanner::new();
+    let fft_forward = planner.plan_fft_forward(fft_size);
+    let fft_inverse = planner.plan_fft_inverse(fft_size);
+    
+    // Iteratively refine phases
+    for iteration in 0..num_iterations {
+        // Step 1: Reconstruct time-domain signal with current phases
+        let output_len = (num_frames - 1) * hop_size + fft_size;
+        let mut time_signal = vec![0.0f32; output_len];
+        let mut window_sum = vec![0.0f32; output_len];
+        
+        for frame_idx in 0..num_frames {
+            let mut spectrum = vec![Complex::new(0.0, 0.0); fft_size];
+            
+            // Build complex spectrum from magnitude and phase
+            for bin in 0..num_bins.min(fft_size / 2 + 1) {
+                let mag = magnitude_spectrogram[bin][frame_idx];
+                let phase = phase_spectrogram[bin][frame_idx];
+                spectrum[bin] = Complex::new(mag * phase.cos(), mag * phase.sin());
+            }
+            
+            // Mirror for negative frequencies
+            for bin in 1..num_bins.min(fft_size / 2) {
+                spectrum[fft_size - bin] = spectrum[bin].conj();
+            }
+            
+            fft_inverse.process(&mut spectrum);
+            
+            // Overlap-add with Hann window
+            let start = frame_idx * hop_size;
+            for (i, &value) in spectrum.iter().take(fft_size).enumerate() {
+                if start + i < output_len {
+                    let window = 0.5 * (1.0 - ((2.0 * std::f32::consts::PI * i as f32) / (fft_size as f32 - 1.0)).cos());
+                    time_signal[start + i] += value.re * window / fft_size as f32;
+                    window_sum[start + i] += window;
+                }
+            }
+        }
+        
+        // Normalize by window sum
+        for i in 0..output_len {
+            if window_sum[i] > 1e-8 {
+                time_signal[i] /= window_sum[i];
+            }
+        }
+        
+        // Step 2: Re-analyze time signal to get improved phases
+        for frame_idx in 0..num_frames {
+            let start = frame_idx * hop_size;
+            let end = (start + fft_size).min(output_len);
+            
+            if end - start < fft_size {
+                break;
+            }
+            
+            // Apply Hann window and FFT
+            let mut buffer: Vec<Complex<f32>> = time_signal[start..end]
+                .iter()
+                .enumerate()
+                .map(|(i, &s)| {
+                    let window = 0.5 * (1.0 - ((2.0 * std::f32::consts::PI * i as f32) / (fft_size as f32 - 1.0)).cos());
+                    Complex::new(s * window, 0.0)
+                })
+                .collect();
+            
+            fft_forward.process(&mut buffer);
+            
+            // Update phases while keeping original magnitudes
+            for bin in 0..num_bins.min(fft_size / 2 + 1) {
+                phase_spectrogram[bin][frame_idx] = buffer[bin].arg();
+            }
+        }
+        
+        if iteration % 10 == 0 || iteration == num_iterations - 1 {
+            println!("  Iteration {}/{} complete", iteration + 1, num_iterations);
+        }
+    }
+    
+    println!("Griffin-Lim complete!");
+    phase_spectrogram
+}
+
+
 pub fn spectrogram_to_audio(
     image_path: &Path,
     output_path: &Path,
@@ -121,7 +220,7 @@ pub fn spectrogram_to_audio(
     }
 
     // Apply inverse frequency scale transformation
-    let (spectrogram_mag, spectrogram_phase) = if use_log_scale {
+    let (spectrogram_mag, mut spectrogram_phase) = if use_log_scale {
         let nyquist = sample_rate as f32 / 2.0;
         let min_freq = config.min_freq;
         let max_freq = nyquist;
@@ -154,6 +253,14 @@ pub fn spectrogram_to_audio(
     } else {
         (spectrogram_mag_image, spectrogram_phase_image)
     };
+    
+    // Apply Griffin-Lim algorithm if phase encoding was disabled
+    if !use_phase_encoding {
+        println!("Phase encoding disabled - using Griffin-Lim for phase reconstruction");
+        spectrogram_phase = griffin_lim(&spectrogram_mag, fft_size, config.hop_size, config.griffin_lim_iterations);
+    } else {
+        println!("Phase encoding enabled - using decoded phases");
+    }
     
     // Inverse STFT
     let mut planner = FftPlanner::new();
