@@ -16,7 +16,7 @@ use config::SpectrogramConfig;
 #[derive(Clone)]
 enum ProcessingState {
     Idle,
-    Processing { progress: f32, status: String },
+    Processing { status: String },
     Complete { output_path: PathBuf },
     Error { message: String },
 }
@@ -108,11 +108,13 @@ impl eframe::App for SpectrogramApp {
             ui.heading("Spectrogram Converter");
             ui.add_space(10.0);
             
-            // Show progress bar if processing
-            if let ProcessingState::Processing { progress, status } = &*self.processing_state.lock().unwrap() {
+            // Show spinner if processing
+            if let ProcessingState::Processing { status } = &*self.processing_state.lock().unwrap() {
                 ui.add_space(5.0);
-                ui.label(&*status);
-                ui.add(egui::ProgressBar::new(*progress).show_percentage());
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(status);
+                });
                 ui.add_space(10.0);
             }
             
@@ -222,7 +224,7 @@ impl eframe::App for SpectrogramApp {
                         .pick_file()
                     {
                         self.selected_file = Some(path);
-                        self.status_message = String::new();
+                        self.status_message = String::new(); // Clear previous status
                     }
                 }
             });
@@ -255,6 +257,8 @@ impl eframe::App for SpectrogramApp {
                 // Export button
                 ui.add_enabled_ui(!is_processing, |ui| {
                     if ui.button("🚀 Export").clicked() {
+                        self.status_message = String::new(); // Clear previous status
+                        
                         let path = path.clone();
                         let config = self.config.clone();
                         let state = self.processing_state.clone();
@@ -262,8 +266,7 @@ impl eframe::App for SpectrogramApp {
                         // Start processing in background thread
                         thread::spawn(move || {
                             *state.lock().unwrap() = ProcessingState::Processing {
-                                progress: 0.0,
-                                status: "Starting...".to_string(),
+                                status: "Processing...".to_string(),
                             };
                             
                             match process_file(&path, &config, state.clone()) {
@@ -305,7 +308,7 @@ impl eframe::App for SpectrogramApp {
                         if let Some(dropped_file) = i.raw.dropped_files.first() {
                             if let Some(path) = &dropped_file.path {
                                 self.selected_file = Some(path.clone());
-                                self.status_message = String::new();
+                                self.status_message = String::new(); // Clear previous status
                             }
                         }
                     }
@@ -397,38 +400,25 @@ fn process_file(
     match extension.as_str() {
         "wav" => {
             *progress_state.lock().unwrap() = ProcessingState::Processing {
-                progress: 0.2,
                 status: "Reading audio file...".to_string(),
             };
             
             let output_path = path.with_extension("png");
             
             *progress_state.lock().unwrap() = ProcessingState::Processing {
-                progress: 0.5,
                 status: "Computing spectrogram...".to_string(),
             };
             
             let result = audio_to_spectrogram(path, &output_path, config)?;
             
-            *progress_state.lock().unwrap() = ProcessingState::Processing {
-                progress: 1.0,
-                status: "Complete!".to_string(),
-            };
-            
             Ok(result)
         }
         "png" | "jpg" | "jpeg" => {
             *progress_state.lock().unwrap() = ProcessingState::Processing {
-                progress: 0.2,
                 status: "Reading image file...".to_string(),
             };
             
             let output_path = path.with_extension("wav");
-            
-            *progress_state.lock().unwrap() = ProcessingState::Processing {
-                progress: 0.3,
-                status: "Decoding spectrogram...".to_string(),
-            };
             
             // Check if Griffin-Lim will be used
             let use_griffin_lim = if let Some(stem) = path.file_stem() {
@@ -440,17 +430,15 @@ fn process_file(
             
             if use_griffin_lim {
                 *progress_state.lock().unwrap() = ProcessingState::Processing {
-                    progress: 0.4,
-                    status: "Running Griffin-Lim algorithm (this may take a while)...".to_string(),
+                    status: "Reconstructing audio (Griffin-Lim algorithm running...)".to_string(),
+                };
+            } else {
+                *progress_state.lock().unwrap() = ProcessingState::Processing {
+                    status: "Reconstructing audio...".to_string(),
                 };
             }
             
             spectrogram_to_audio(path, &output_path, config)?;
-            
-            *progress_state.lock().unwrap() = ProcessingState::Processing {
-                progress: 1.0,
-                status: "Complete!".to_string(),
-            };
             
             Ok(output_path)
         }
