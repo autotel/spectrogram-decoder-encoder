@@ -1,6 +1,7 @@
 # Spectrogram Converter
-Vibe-coded w. Claude
 Bidirectional audio ↔ image converter. Turn sound into pictures, edit them, turn them back into sound.
+
+Vibe-coded w. Claude
 
 ## Quick Start
 
